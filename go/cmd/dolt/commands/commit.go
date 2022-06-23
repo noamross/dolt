@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions/commitwalk"
+	"github.com/dolthub/dolt/go/store/hash"
 	"io"
 	"os"
 	"strings"
@@ -524,14 +526,70 @@ func getRemoteCommitTracking(ctx context.Context, dEnv *env.DoltEnv) error {
 		return err
 	}
 
-	ancesCommit, err := doltdb.GetCommitAncestor(ctx, headCommit, remoteCommit)
+	ancCommit, err := doltdb.GetCommitAncestor(ctx, headCommit, remoteCommit)
 	if err != nil {
 		return err
 	}
-	ancesHash, _ := ancesCommit.HashOf()
+	ancHash, err := ancCommit.HashOf()
+	if err != nil {
+		return err
+	}
 
-	//cli.Println(getRemoteTrackingMsg(rbn, ahead, behind))
+	var ahead uint64
+	var behind uint64
+	if headHash == ancHash && remoteHash == ancHash {
+		ahead = 0
+		behind = 0
+	} else if headHash == ancHash {
+		behind, err = getNumOfCommitBetweenTwoCommits(ctx, localDB, remoteHash, ancHash)
+		if err != nil {
+			return err
+		}
+	} else if remoteHash == ancHash {
+		ahead, err = getNumOfCommitBetweenTwoCommits(ctx, localDB, headHash, ancHash)
+		if err != nil {
+			return err
+		}
+	} else {
+		behind, err = getNumOfCommitBetweenTwoCommits(ctx, localDB, remoteHash, ancHash)
+		if err != nil {
+			return err
+		}
+		ahead, err = getNumOfCommitBetweenTwoCommits(ctx, localDB, headHash, ancHash)
+		if err != nil {
+			return err
+		}
+	}
+
+	cli.Println(getRemoteTrackingMsg(remoteTrackingRef.GetPath(), ahead, behind))
 	return nil
+}
+
+func getNumOfCommitBetweenTwoCommits(ctx context.Context, ddb *doltdb.DoltDB, startCommitHash, targetCommitHash hash.Hash) (uint64, error) {
+	itr, iErr := commitwalk.GetTopologicalOrderIterator(ctx, ddb, startCommitHash)
+	if iErr != nil {
+		return 0, iErr
+	}
+	count := uint64(0)
+	for {
+		_, commit, err := itr.Next(ctx)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return 0, err
+		}
+
+		h, err := commit.HashOf()
+		if err != nil {
+			return 0, err
+		}
+		if h == targetCommitHash {
+			break
+		}
+		count += 1
+	}
+
+	return count, nil
 }
 
 func getRemoteTrackingMsg(remoteBranchName string, ahead uint64, behind uint64) string {
